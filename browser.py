@@ -231,29 +231,37 @@ class BrowserManager:
         while time.monotonic() < deadline:
             if self.chrome_proc is not None and self.chrome_proc.poll() is not None:
                 raise RuntimeError("로그인 완료 전에 브라우저 창이 닫혔습니다.")
+            on_studio = False
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2.0) as resp:
                     tabs = json.loads(resp.read().decode("utf-8"))
                 on_studio = any(
                     isinstance(t, dict)
                     and t.get("type") == "page"
-                    and "aistudio.google.com" in str(t.get("url", "")) and "accounts.google.com" not in str(t.get("url", ""))
+                    and "aistudio.google.com" in str(t.get("url", ""))
+                    and "accounts.google.com" not in str(t.get("url", ""))
                     for t in tabs
                 )
-                if on_studio:
-                    self.logger.debug("로그인", "AI Studio 탭 감지 -> Selenium 연결")
-                    options = self.build_options(debugger_address=f"127.0.0.1:{port}")
-                    driver = webdriver.Chrome(options=options)
-                    try:
-                        svc = getattr(driver, "service", None)
-                        proc = getattr(svc, "process", None) if svc else None
-                        if proc and proc.pid:
-                            self._tracked_pids.add(int(proc.pid))
-                    except Exception:
-                        pass
-                    return driver
             except Exception:
-                pass
+                on_studio = False
+
+            if on_studio:
+                self.logger.debug("로그인", "AI Studio 탭 감지 -> Selenium 연결")
+                options = self.build_options(debugger_address=f"127.0.0.1:{port}")
+                try:
+                    driver = webdriver.Chrome(options=options)
+                except Exception as e:
+                    self.logger.emit("로그인", f"Selenium 연결 실패: {e}")
+                    raise
+                try:
+                    svc = getattr(driver, "service", None)
+                    proc = getattr(svc, "process", None) if svc else None
+                    if proc and proc.pid:
+                        self._tracked_pids.add(int(proc.pid))
+                except Exception:
+                    pass
+                return driver
+
             now = time.monotonic()
             if now - last_log >= 15.0:
                 self.logger.emit("로그인", "로그인 및 AI Studio 진입 대기 중...")
