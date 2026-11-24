@@ -42,8 +42,7 @@ Google AI Studio Playground 웹 인터페이스를 Selenium과 JavaScript 제어
 ## 설치
 
 ```powershell
-git clone https://github.com/Minekmj/playground_on_python.git
-pip install -r requirements.txt
+pip install --no-cache-dir "git+https://github.com/Minekmj/playground_on_python.git"
 ```
 
 - Google Chrome 브라우저가 설치되어 있어야 합니다.
