@@ -86,18 +86,22 @@ class PlayGround:
         self._state = state
         try:
             cookies = driver.get_cookies()
+            domains = sorted({str(c.get("domain", "")) for c in cookies})
+            self.logger.debug("디버그", f"쿠키 저장: {len(cookies)}개, 도메인={domains}, encrypt={self.encrypt}")
             self.storage.save_cookies(cookies, backup=backup)
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug("디버그", f"쿠키 저장 실패: {e}")
         return state
 
     def _restore_cookies(self, driver: webdriver.Chrome, backup: bool) -> bool:
         cookies = self.storage.load_cookies(backup=backup)
+        self.logger.debug("디버그", f"쿠키 복원 시도: 저장된 쿠키 {len(cookies)}개 (backup={backup})")
         if not cookies:
             return False
         driver.get(AI_STUDIO_BASE_URL)
         time.sleep(0.5)
         restored = 0
+        failed = 0
         for cookie in cookies:
             c = dict(cookie)
             c.pop("sameSite", None)
@@ -110,7 +114,8 @@ class PlayGround:
                 driver.add_cookie(c)
                 restored += 1
             except Exception:
-                pass
+                failed += 1
+        self.logger.debug("디버그", f"쿠키 복원 결과: 성공={restored}, 실패={failed}")
         return restored > 0
 
     def is_logged_in(self, backup: bool = True, timeout: int = 30) -> bool:
@@ -283,15 +288,34 @@ class PlayGround:
             try:
                 driver.get(target_url)
                 self.dom.wait_prompt_box_ready(driver, timeout=timeout)
-                auth_state = self.dom.wait_auth_state(driver, timeout=6.0)
+                auth_state = self.dom.wait_auth_state(driver, timeout=12.0)
 
                 if auth_state != "signed_in" and backup:
                     if self._restore_cookies(driver, backup=True):
                         driver.get(target_url)
                         self.dom.wait_prompt_box_ready(driver, timeout=timeout)
-                        auth_state = self.dom.wait_auth_state(driver, timeout=6.0)
+                        auth_state = self.dom.wait_auth_state(driver, timeout=12.0)
 
                 if auth_state != "signed_in":
+                    try:
+                        cur_u = driver.current_url
+                        cur_title = driver.title
+                        cur_cookies = driver.get_cookies()
+                        cookie_names = [f"{c.get('name')}@{c.get('domain')}" for c in cur_cookies[:15]]
+                        dom_info = driver.execute_script(
+                            "return {"
+                            "promptBox: !!document.querySelector('ms-prompt-box textarea'),"
+                            "accBtn: document.querySelector('ms-account-switcher')?.outerHTML?.slice(0, 300) || null"
+                            "};"
+                        )
+                    except Exception as diag_err:
+                        cur_u, cur_title, cur_cookies, cookie_names, dom_info = "", "", [], [], str(diag_err)
+                    self.logger.emit(
+                        "디버그",
+                        f"인증 미완료: state={auth_state}, url={cur_u}, title={cur_title}, "
+                        f"cookies={len(cur_cookies)} {cookie_names}, dom={dom_info}, "
+                        f"saved_state={self._state}"
+                    )
                     if auto_login:
                         self.logger.emit("연결", "세션 만료 -> 자동 재로그인 실행")
                         self.browser.shutdown(driver)

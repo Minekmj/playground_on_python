@@ -175,10 +175,11 @@ class ProfileStorage:
 
     def has_any_saved_session(self) -> bool:
         return (
-            self.has_profile_data()
-            or self.has_backup_data()
+            self.has_backup_data()
             or self.cookies_enc_file.is_file()
             or self.cookies_plain_file.is_file()
+            or self.state_enc_file.is_file()
+            or self.state_plain_file.is_file()
         )
 
     def wipe_runtime_profile(self) -> None:

@@ -103,11 +103,22 @@ class AIStudioDOM:
         }
 
     def wait_prompt_box_ready(self, driver: webdriver.Chrome, timeout: int) -> None:
-        WebDriverWait(driver, max(15, int(timeout)), poll_frequency=0.05).until(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, 'ms-prompt-box textarea[formcontrolname="promptText"], ms-prompt-box textarea[aria-label="Enter a prompt"]')
+        def _ready_or_signed_out(drv: webdriver.Chrome):
+            try:
+                url = drv.current_url or ""
+                if "accounts.google.com" in url or "ServiceLogin" in url:
+                    return True
+            except Exception:
+                pass
+            if self.get_auth_state(drv) == "signed_out":
+                return True
+            els = drv.find_elements(
+                By.CSS_SELECTOR,
+                'ms-prompt-box textarea[formcontrolname="promptText"], ms-prompt-box textarea[aria-label="Enter a prompt"]'
             )
-        )
+            return els[0] if els else False
+
+        WebDriverWait(driver, max(15, int(timeout)), poll_frequency=0.1).until(_ready_or_signed_out)
 
     def wait_no_overlay_backdrop(self, driver: webdriver.Chrome, timeout: float = 1.5) -> None:
         script = load_js("has_overlay_backdrop.js")

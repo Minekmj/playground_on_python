@@ -237,7 +237,7 @@ class BrowserManager:
                 on_studio = any(
                     isinstance(t, dict)
                     and t.get("type") == "page"
-                    and "aistudio.google.com/prompts" in str(t.get("url", ""))
+                    and "aistudio.google.com" in str(t.get("url", "")) and "accounts.google.com" not in str(t.get("url", ""))
                     for t in tabs
                 )
                 if on_studio:
@@ -271,6 +271,11 @@ class BrowserManager:
                     pids.add(int(proc.pid))
             except Exception:
                 pass
+            if self.chrome_proc is not None:
+                try:
+                    driver.execute_cdp_cmd("Browser.close", {})
+                except Exception:
+                    pass
             try:
                 driver.quit()
             except Exception:
@@ -280,10 +285,14 @@ class BrowserManager:
                 pids.add(int(self.chrome_proc.pid))
             try:
                 if self.chrome_proc.poll() is None:
-                    self.chrome_proc.terminate()
-                    self.chrome_proc.wait(timeout=3)
+                    self.chrome_proc.wait(timeout=4)
             except Exception:
-                pass
+                try:
+                    if self.chrome_proc.poll() is None:
+                        self.chrome_proc.terminate()
+                        self.chrome_proc.wait(timeout=2)
+                except Exception:
+                    pass
             self.chrome_proc = None
 
         for pid in pids:
