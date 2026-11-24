@@ -209,9 +209,27 @@ class PlayGround:
                         driver.get(target_url)
 
                     deadline = time.monotonic() + max(30, wait_timeout)
+                    on_studio_since = None
+                    reloaded = False
                     while time.monotonic() < deadline:
                         if self.dom.is_logged_in_and_ready(driver):
                             break
+                        cur_u = ""
+                        try:
+                            cur_u = driver.current_url or ""
+                        except Exception:
+                            pass
+                        if "aistudio.google.com/prompts" in cur_u:
+                            if on_studio_since is None:
+                                on_studio_since = time.monotonic()
+                            elif not reloaded and (time.monotonic() - on_studio_since) >= 5.0:
+                                reloaded = True
+                                try:
+                                    driver.get(AI_STUDIO_NEW_CHAT_URL)
+                                except Exception:
+                                    pass
+                        else:
+                            on_studio_since = None
                         time.sleep(0.5)
                     if not self.dom.is_logged_in_and_ready(driver):
                         raise TimeoutException("구글 로그인 및 AI Studio 플레이그라운드 진입 시간 초과")
