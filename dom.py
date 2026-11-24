@@ -15,41 +15,23 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from playground_on_python.browser import BrowserManager
-from playground_on_python.config import PlayGroundConfig
-from playground_on_python.js_loader import load_js
-from playground_on_python.logger import PlayGroundLogger
-from playground_on_python.storage import AI_STUDIO_NEW_CHAT_URL
+from .browser import BrowserManager
+from .config import PlayGroundConfig
+from .js_loader import load_js
+from .logger import PlayGroundLogger
+from .storage import AI_STUDIO_NEW_CHAT_URL
 
 MediaItem = Union[str, Path, Tuple[bytes, str], Any]
 MediaInput = Union[MediaItem, Sequence[MediaItem]]
 
 _KIND_ALIASES = {
-    "text": "text",
-    "텍스트": "text",
-    "chat": "text",
-    "gemini": "text",
-    "image": "image",
-    "images": "image",
-    "img": "image",
-    "imagen": "image",
-    "이미지": "image",
-    "사진": "image",
-    "그림": "image",
-    "video": "video",
-    "videos": "video",
-    "veo": "video",
-    "비디오": "video",
-    "영상": "video",
-    "audio": "audio",
-    "voice": "audio",
-    "speech": "audio",
-    "live": "audio",
-    "music": "audio",
-    "오디오": "audio",
-    "음성": "audio",
-    "all": "all",
-    "전체": "all",
+    "text": "text", "텍스트": "text", "chat": "text", "gemini": "text",
+    "image": "image", "images": "image", "img": "image", "imagen": "image",
+    "이미지": "image", "사진": "image", "그림": "image",
+    "video": "video", "videos": "video", "veo": "video", "비디오": "video", "영상": "video",
+    "audio": "audio", "voice": "audio", "speech": "audio", "live": "audio",
+    "music": "audio", "오디오": "audio", "음성": "audio",
+    "all": "all", "전체": "all",
 }
 
 
@@ -81,14 +63,29 @@ class AIStudioDOM:
     def reset_cache(self) -> None:
         self._cache.clear()
 
-    def is_logged_in_and_ready(self, driver: webdriver.Chrome) -> bool:
+    def get_auth_state(self, driver: webdriver.Chrome) -> str:
         try:
             url = driver.current_url or ""
+            if "accounts.google.com" in url or "ServiceLogin" in url:
+                return "signed_out"
             if "aistudio.google.com" not in url:
-                return False
-            return bool(driver.execute_script(load_js("check_auth_ready.js")))
+                return "loading"
+            return str(driver.execute_script(load_js("check_auth_state.js")) or "loading")
         except Exception:
-            return False
+            return "loading"
+
+    def wait_auth_state(self, driver: webdriver.Chrome, timeout: float = 6.0) -> str:
+        deadline = time.monotonic() + timeout
+        last_state = "loading"
+        while time.monotonic() < deadline:
+            last_state = self.get_auth_state(driver)
+            if last_state in ("signed_in", "signed_out"):
+                return last_state
+            time.sleep(0.15)
+        return last_state
+
+    def is_logged_in_and_ready(self, driver: webdriver.Chrome) -> bool:
+        return self.get_auth_state(driver) == "signed_in"
 
     def extract_account_info(self, driver: webdriver.Chrome) -> Dict[str, str]:
         info = driver.execute_script(load_js("extract_account_info.js")) or {}
@@ -144,6 +141,19 @@ class AIStudioDOM:
         if not driver.execute_script(load_js("ensure_group_expanded.js"), aria_label):
             time.sleep(0.1)
 
+    def _is_sliding_panel_open(self, driver: webdriver.Chrome) -> bool:
+        return bool(
+            driver.execute_script(
+                """
+                const els = document.querySelectorAll('ms-model-carousel-row, ms-sliding-right-panel .panel-header, ms-system-instructions textarea');
+                return Array.from(els).some(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+                });
+                """
+            )
+        )
+
     def close_open_panels(self, driver: webdriver.Chrome) -> None:
         selectors = [
             "ms-sliding-right-panel .panel-header .back-button",
@@ -153,10 +163,20 @@ class AIStudioDOM:
             ".toolbar-system-instructions .close-button",
             'ms-system-instructions button[aria-label*="Close" i]',
         ]
-        for sel in selectors:
-            if self.browser.js_click_selector(driver, sel, label="패널 닫기"):
-                self.wait_no_overlay_backdrop(driver, timeout=1.0)
-                return
+        for _ in range(2):
+            if not self._is_sliding_panel_open(driver):
+                break
+            clicked = False
+            for sel in selectors:
+                if self.browser.js_click_selector(driver, sel, label="패널 닫기"):
+                    clicked = True
+                    break
+            if not clicked:
+                driver.execute_script("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));")
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and self._is_sliding_panel_open(driver):
+                time.sleep(0.05)
+        self.wait_no_overlay_backdrop(driver, timeout=1.0)
 
     def _close_dialog_if_open(self, driver: webdriver.Chrome) -> None:
         driver.execute_script(load_js("close_dialog.js"))
@@ -248,62 +268,55 @@ class AIStudioDOM:
     ) -> List[Dict[str, Any]]:
         if self._models_cache is None or refresh:
             self.ensure_run_settings_open(driver)
-            self.wait_no_overlay_backdrop(driver)
-            self.browser.js_click_selector(driver, "ms-model-selector button.model-selector-card")
-            WebDriverWait(driver, 15, poll_frequency=0.05).until(
-                lambda d: len(d.find_elements(By.CSS_SELECTOR, "ms-model-carousel-row")) > 0
-            )
-
-            chips = driver.execute_script(load_js("list_model_chips.js")) or []
-            scrape_js = load_js("scrape_model_rows.js")
-            merged: Dict[str, Dict[str, Any]] = {}
-            all_chip = next((c for c in chips if c["text"].lower() in ("all", "전체")), None)
-
-            def _absorb(rows: List[Dict[str, Any]]) -> None:
-                for row in rows:
-                    key = (row["id"] or row["name"]).lower()
-                    cat_tab = row.pop("category_tab", "")
-                    if key not in merged:
-                        row["categories"] = [cat_tab] if cat_tab else []
-                        row["kind"] = _infer_model_kind(row["name"], row["id"], row["subtitle"], row["categories"], row.pop("icon", ""))
-                        merged[key] = row
-                    else:
-                        row.pop("icon", None)
-                        if cat_tab and cat_tab not in merged[key]["categories"]:
-                            merged[key]["categories"].append(cat_tab)
-                        merged[key]["is_paid"] = merged[key]["is_paid"] or row["is_paid"]
-                        if merged[key]["kind"] == "text":
-                            merged[key]["kind"] = _infer_model_kind(
-                                merged[key]["name"],
-                                merged[key]["id"],
-                                merged[key]["subtitle"],
-                                merged[key]["categories"],
-                                "",
-                            )
-
-            if all_chip is not None:
-                if not all_chip["active"]:
-                    driver.execute_script(
-                        "document.querySelectorAll('.model-categories-container button')[arguments[0]]?.click();",
-                        all_chip["idx"],
-                    )
-                    time.sleep(0.15)
-                _absorb(driver.execute_script(scrape_js, all_chip["text"]) or [])
-
-            for c in [x for x in chips if x["text"].lower() not in ("all", "전체")]:
-                driver.execute_script(
-                    "document.querySelectorAll('.model-categories-container button')[arguments[0]]?.click();",
-                    c["idx"],
-                )
-                time.sleep(0.12)
-                _absorb(driver.execute_script(scrape_js, c["text"]) or [])
-
-            if not chips:
-                _absorb(driver.execute_script(scrape_js, "") or [])
-
             self.close_open_panels(driver)
-            self._models_cache = list(merged.values())
-            self.logger.emit("모델 목록", f"총 {len(self._models_cache)}개 조회")
+            self.browser.js_click_selector(driver, "ms-model-selector button.model-selector-card")
+            try:
+                WebDriverWait(driver, 15, poll_frequency=0.05).until(
+                    lambda d: len(d.find_elements(By.CSS_SELECTOR, "ms-model-carousel-row")) > 0
+                )
+
+                chips = driver.execute_script(load_js("list_model_chips.js")) or []
+                scrape_js = load_js("scrape_model_rows.js")
+                merged: Dict[str, Dict[str, Any]] = {}
+                all_chip = next((c for c in chips if c["text"].lower() in ("all", "전체")), None)
+
+                def _absorb(rows: List[Dict[str, Any]]) -> None:
+                    for row in rows:
+                        key = (row["id"] or row["name"]).lower()
+                        cat_tab = row.pop("category_tab", "")
+                        if key not in merged:
+                            row["categories"] = [cat_tab] if cat_tab else []
+                            row["kind"] = _infer_model_kind(row["name"], row["id"], row["subtitle"], row["categories"], row.pop("icon", ""))
+                            merged[key] = row
+                        else:
+                            row.pop("icon", None)
+                            if cat_tab and cat_tab not in merged[key]["categories"]:
+                                merged[key]["categories"].append(cat_tab)
+                            merged[key]["is_paid"] = merged[key]["is_paid"] or row["is_paid"]
+
+                if all_chip is not None:
+                    if not all_chip["active"]:
+                        driver.execute_script(
+                            "document.querySelectorAll('.model-categories-container button')[arguments[0]]?.click();",
+                            all_chip["idx"],
+                        )
+                        time.sleep(0.15)
+                    _absorb(driver.execute_script(scrape_js, all_chip["text"]) or [])
+                elif chips:
+                    for c in chips[:10]:
+                        driver.execute_script(
+                            "document.querySelectorAll('.model-categories-container button')[arguments[0]]?.click();",
+                            c["idx"],
+                        )
+                        time.sleep(0.12)
+                        _absorb(driver.execute_script(scrape_js, c["text"]) or [])
+                else:
+                    _absorb(driver.execute_script(scrape_js, "") or [])
+
+                self._models_cache = list(merged.values())
+                self.logger.emit("모델 목록", f"총 {len(self._models_cache)}개 조회")
+            finally:
+                self.close_open_panels(driver)
 
         results = list(self._models_cache)
         norm_kind = _normalize_kind(kind)
@@ -328,69 +341,72 @@ class AIStudioDOM:
         if self._cache.get("model") == target_norm:
             return
 
-        if allow_paid is False:
-            models = self.list_models(driver)
-            matched = next((m for m in models if target_norm in (m["id"].lower(), m["name"].lower())), None)
+        if allow_paid is False and self._models_cache is not None:
+            matched = next((m for m in self._models_cache if target_norm in (m["id"].lower(), m["name"].lower())), None)
             if matched and matched.get("is_paid"):
                 raise PermissionError(f"유료(Paid) 모델 사용이 차단되었습니다: {matched['name']} ({matched['id']})")
 
-        self.wait_no_overlay_backdrop(driver)
+        self.close_open_panels(driver)
         cur = driver.execute_script(load_js("get_model_card_info.js"))
         if cur and target_norm in (cur.get("title"), cur.get("id")):
+            if allow_paid is False and self._models_cache is None:
+                models = self.list_models(driver)
+                matched = next((m for m in models if target_norm in (m["id"].lower(), m["name"].lower())), None)
+                if matched and matched.get("is_paid"):
+                    raise PermissionError(f"유료(Paid) 모델 사용이 차단되었습니다: {matched['name']} ({matched['id']})")
             self._cache["model"] = target_norm
             return
 
         self.browser.js_click_selector(driver, "ms-model-selector button.model-selector-card")
-        WebDriverWait(driver, 15, poll_frequency=0.05).until(
-            lambda d: len(d.find_elements(By.CSS_SELECTOR, "ms-model-carousel-row")) > 0
-        )
-
-        driver.execute_script(
-            """
-            for (const b of document.querySelectorAll('.model-categories-container button')) {
-                const t = (b.innerText || '').trim().toLowerCase();
-                if ((t === 'all' || t === '전체') && !b.classList.contains('ms-button-active')) { b.click(); break; }
-            }
-            """
-        )
-        time.sleep(0.1)
-
-        select_js = load_js("select_model_in_view.js")
-        selected = driver.execute_script(select_js, target_norm)
-        if not selected:
-            tab_count = int(
-                driver.execute_script(
-                    "return document.querySelectorAll('.model-categories-container button:not(.alt-view-tab-button)').length;"
-                )
-                or 0
+        try:
+            WebDriverWait(driver, 15, poll_frequency=0.05).until(
+                lambda d: len(d.find_elements(By.CSS_SELECTOR, "ms-model-carousel-row")) > 0
             )
-            for idx in range(tab_count):
-                driver.execute_script(
-                    "document.querySelectorAll('.model-categories-container button:not(.alt-view-tab-button)')[arguments[0]]?.click();",
-                    idx,
+            driver.execute_script(
+                """
+                for (const b of document.querySelectorAll('.model-categories-container button')) {
+                    const t = (b.innerText || '').trim().toLowerCase();
+                    if ((t === 'all' || t === '전체') && !b.classList.contains('ms-button-active')) { b.click(); break; }
+                }
+                """
+            )
+            time.sleep(0.1)
+
+            select_js = load_js("select_model_in_view.js")
+            selected = driver.execute_script(select_js, target_norm)
+            if not selected:
+                tab_count = int(
+                    driver.execute_script(
+                        "return document.querySelectorAll('.model-categories-container button:not(.alt-view-tab-button)').length;"
+                    )
+                    or 0
                 )
-                time.sleep(0.12)
-                selected = driver.execute_script(select_js, target_norm)
-                if selected:
-                    break
+                for idx in range(min(tab_count, 10)):
+                    driver.execute_script(
+                        "document.querySelectorAll('.model-categories-container button:not(.alt-view-tab-button)')[arguments[0]]?.click();",
+                        idx,
+                    )
+                    time.sleep(0.12)
+                    selected = driver.execute_script(select_js, target_norm)
+                    if selected:
+                        break
 
-        if not selected:
+            if not selected:
+                raise ValueError(f"모델을 찾을 수 없습니다: {model}")
+
+            if allow_paid is False and selected.get("is_paid"):
+                raise PermissionError(f"유료(Paid) 모델 사용이 차단되었습니다: {selected.get('name') or model}")
+
+            time.sleep(0.15)
+            self._cache["model"] = target_norm
+            for k in (
+                "temp", "think", "thinking_budget", "media_resolution",
+                "top_p", "seed", "aspect_ratio", "image_size", "output_modality", "number_of_images",
+            ):
+                self._cache.pop(k, None)
+            self.logger.emit("모델", f"-> {selected.get('name') or model}")
+        finally:
             self.close_open_panels(driver)
-            raise ValueError(f"모델을 찾을 수 없습니다: {model}")
-
-        if allow_paid is False and selected.get("is_paid"):
-            self.close_open_panels(driver)
-            raise PermissionError(f"유료(Paid) 모델 사용이 차단되었습니다: {selected.get('name') or model}")
-
-        time.sleep(0.15)
-        self.close_open_panels(driver)
-        self._cache["model"] = target_norm
-        for k in (
-            "temp", "think", "thinking_budget", "media_resolution",
-            "top_p", "seed", "aspect_ratio", "image_size", "output_modality", "number_of_images",
-        ):
-            self._cache.pop(k, None)
-        self.logger.emit("모델", f"-> {selected.get('name') or model}")
 
     def _find_system_instructions_editor(self, driver: webdriver.Chrome):
         selectors = [

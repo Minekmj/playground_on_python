@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import atexit
 from dataclasses import asdict
 from pathlib import Path
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Union
+import weakref
 
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
 
-from playground_on_python.browser import BrowserManager
-from playground_on_python.config import PlayGroundConfig
-from playground_on_python.dom import AIStudioDOM, MediaInput
-from playground_on_python.logger import PlayGroundLogger
-from playground_on_python.storage import AI_STUDIO_BASE_URL, AI_STUDIO_NEW_CHAT_URL, ProfileStorage
+from .browser import BrowserManager
+from .config import PlayGroundConfig
+from .dom import AIStudioDOM, MediaInput
+from .logger import PlayGroundLogger
+from .storage import AI_STUDIO_BASE_URL, AI_STUDIO_NEW_CHAT_URL, ProfileStorage
 
 
 class PlayGround:
@@ -54,6 +56,18 @@ class PlayGround:
         self._backup_enabled = False
         self._state: Dict[str, Any] = {}
         self._lock = threading.RLock()
+
+        self_ref = weakref.ref(self)
+
+        def _atexit_close() -> None:
+            obj = self_ref()
+            if obj is not None:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+
+        atexit.register(_atexit_close)
 
     def __enter__(self) -> "PlayGround":
         return self
@@ -102,7 +116,7 @@ class PlayGround:
     def is_logged_in(self, backup: bool = True, timeout: int = 30) -> bool:
         with self._lock:
             if self.driver is not None:
-                return self.dom.is_logged_in_and_ready(self.driver)
+                return self.dom.wait_auth_state(self.driver, timeout=3.0) == "signed_in"
             if backup and not self.storage.has_profile_data():
                 self.storage.restore_profile_from_backup()
             if not self.storage.has_any_saved_session():
@@ -112,14 +126,12 @@ class PlayGround:
             try:
                 driver.get(AI_STUDIO_NEW_CHAT_URL)
                 self.dom.wait_prompt_box_ready(driver, timeout=timeout)
-                time.sleep(0.25)
-                if self.dom.is_logged_in_and_ready(driver):
+                if self.dom.wait_auth_state(driver, timeout=5.0) == "signed_in":
                     return True
                 if backup and self._restore_cookies(driver, backup=True):
                     driver.get(AI_STUDIO_NEW_CHAT_URL)
                     self.dom.wait_prompt_box_ready(driver, timeout=timeout)
-                    time.sleep(0.25)
-                    return self.dom.is_logged_in_and_ready(driver)
+                    return self.dom.wait_auth_state(driver, timeout=5.0) == "signed_in"
                 return False
             except Exception:
                 return False
@@ -149,13 +161,13 @@ class PlayGround:
                         try:
                             probe.get(target)
                             self.dom.wait_prompt_box_ready(probe, timeout=40)
-                            time.sleep(0.25)
-                            if not self.dom.is_logged_in_and_ready(probe) and backup:
+                            auth_state = self.dom.wait_auth_state(probe, timeout=6.0)
+                            if auth_state != "signed_in" and backup:
                                 if self._restore_cookies(probe, backup=True):
                                     probe.get(target)
                                     self.dom.wait_prompt_box_ready(probe, timeout=40)
-                                    time.sleep(0.25)
-                            if self.dom.is_logged_in_and_ready(probe):
+                                    auth_state = self.dom.wait_auth_state(probe, timeout=6.0)
+                            if auth_state == "signed_in":
                                 state = self._save_session(probe, backup=backup)
                                 self.logger.emit("설정", f"자동 확인 완료 ({state.get('account_email')})")
                                 if keep_open:
@@ -163,7 +175,7 @@ class PlayGround:
                                 else:
                                     self.browser.shutdown(probe)
                                     if backup:
-                                        time.sleep(0.4)
+                                        time.sleep(0.3)
                                         self.storage.backup_profile()
                                     if self.wipe_runtime_profile:
                                         self.storage.wipe_runtime_profile()
@@ -219,13 +231,13 @@ class PlayGround:
                     self.browser.shutdown(driver)
                     driver = None
                     if backup:
-                        time.sleep(0.5)
+                        time.sleep(0.4)
                         self.storage.backup_profile()
                     if self.wipe_runtime_profile:
                         self.storage.wipe_runtime_profile()
                 return state
             except Exception:
-                if driver is not None and not keep_open:
+                if not keep_open:
                     self.browser.shutdown(driver)
                 raise
 
@@ -271,15 +283,15 @@ class PlayGround:
             try:
                 driver.get(target_url)
                 self.dom.wait_prompt_box_ready(driver, timeout=timeout)
-                time.sleep(0.25)
+                auth_state = self.dom.wait_auth_state(driver, timeout=6.0)
 
-                if not self.dom.is_logged_in_and_ready(driver):
-                    if backup and self._restore_cookies(driver, backup=True):
+                if auth_state != "signed_in" and backup:
+                    if self._restore_cookies(driver, backup=True):
                         driver.get(target_url)
                         self.dom.wait_prompt_box_ready(driver, timeout=timeout)
-                        time.sleep(0.25)
+                        auth_state = self.dom.wait_auth_state(driver, timeout=6.0)
 
-                if not self.dom.is_logged_in_and_ready(driver):
+                if auth_state != "signed_in":
                     if auto_login:
                         self.logger.emit("연결", "세션 만료 -> 자동 재로그인 실행")
                         self.browser.shutdown(driver)

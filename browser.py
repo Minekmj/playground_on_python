@@ -8,16 +8,16 @@ import shutil
 import socket
 import subprocess
 import time
-from typing import List, Optional
+from typing import List, Optional, Set
 import urllib.request
 
 from selenium import webdriver
 from selenium.common.exceptions import SessionNotCreatedException
 from selenium.webdriver.chrome.options import Options
 
-from playground_on_python.js_loader import load_js
-from playground_on_python.logger import PlayGroundLogger
-from playground_on_python.storage import ProfileStorage
+from .js_loader import load_js
+from .logger import PlayGroundLogger
+from .storage import ProfileStorage
 
 
 def find_free_port() -> int:
@@ -51,6 +51,23 @@ def find_chrome_executable() -> Optional[str]:
     return None
 
 
+def _kill_pid_tree(pid: int) -> None:
+    if not pid or pid <= 0:
+        return
+    try:
+        if platform.system() == "Windows":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        else:
+            os.kill(pid, 9)
+    except Exception:
+        pass
+
+
 def kill_chrome_using_profile(profile_dir: Path) -> None:
     target = str(profile_dir.resolve())
     system = platform.system()
@@ -59,19 +76,19 @@ def kill_chrome_using_profile(profile_dir: Path) -> None:
             escaped = target.replace("'", "''")
             ps_cmd = (
                 f"$t = '{escaped}'; "
-                "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
-                "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($t) } | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+                "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='chromedriver.exe'\" | "
+                "Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($t, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 } | "
+                "ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>$null }"
             )
             subprocess.run(
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=8,
+                timeout=10,
             )
         else:
             subprocess.run(
-                ["pkill", "-f", target],
+                ["pkill", "-9", "-f", target],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
@@ -85,6 +102,7 @@ class BrowserManager:
         self.storage = storage
         self.logger = logger
         self.chrome_proc: Optional[subprocess.Popen] = None
+        self._tracked_pids: Set[int] = set()
 
     def build_options(
         self,
@@ -121,6 +139,13 @@ class BrowserManager:
         options = self.build_options(headless=headless, extra_safe=extra_safe)
         driver = webdriver.Chrome(options=options)
         try:
+            svc = getattr(driver, "service", None)
+            proc = getattr(svc, "process", None) if svc else None
+            if proc and proc.pid:
+                self._tracked_pids.add(int(proc.pid))
+        except Exception:
+            pass
+        try:
             driver.set_window_size(1440, 960)
         except Exception:
             pass
@@ -141,53 +166,64 @@ class BrowserManager:
         return driver
 
     def start_selenium(self, headless: bool = True) -> webdriver.Chrome:
-        self.logger.debug("브라우저", f"Chrome 시작 ({'Headless' if headless else 'GUI'})")
-        if self.storage.cleanup_locks():
-            self.logger.emit("브라우저", "기존 프로필 점유 Chrome 정리 후 재시도")
-            kill_chrome_using_profile(self.storage.profile_dir)
-            time.sleep(0.3)
-            self.storage.cleanup_locks()
-
+        self.storage.acquire_profile_lock()
         try:
-            return self._create_driver(headless=headless, extra_safe=False)
-        except SessionNotCreatedException:
-            self.logger.emit("브라우저", "Chrome 시작 실패 -> 프로세스/잠금 정리 후 재시도")
-            kill_chrome_using_profile(self.storage.profile_dir)
-            time.sleep(0.4)
-            self.storage.cleanup_locks()
+            self.logger.debug("브라우저", f"Chrome 시작 ({'Headless' if headless else 'GUI'})")
+            if self.storage.cleanup_locks():
+                kill_chrome_using_profile(self.storage.profile_dir)
+                time.sleep(0.3)
+                self.storage.cleanup_locks()
+
             try:
-                return self._create_driver(headless=headless, extra_safe=True)
+                return self._create_driver(headless=headless, extra_safe=False)
             except SessionNotCreatedException:
-                self.logger.emit("브라우저", "프로필 손상 의심 -> 런타임 프로필 초기화 후 복구 시도")
-                self.storage.wipe_runtime_profile()
-                return self._create_driver(headless=headless, extra_safe=True)
+                self.logger.emit("브라우저", "이전 Chrome 점유 감지 -> 강제 정리 후 재시도")
+                kill_chrome_using_profile(self.storage.profile_dir)
+                time.sleep(0.4)
+                self.storage.cleanup_locks()
+                try:
+                    return self._create_driver(headless=headless, extra_safe=True)
+                except SessionNotCreatedException:
+                    self.logger.emit("브라우저", "프로필 손상 의심 -> 런타임 프로필 초기화 후 재시도")
+                    self.storage.wipe_runtime_profile()
+                    return self._create_driver(headless=headless, extra_safe=True)
+        except Exception:
+            self.storage.release_profile_lock()
+            raise
 
     def launch_native_chrome(self, target_url: str) -> Optional[int]:
         chrome_exe = find_chrome_executable()
         if not chrome_exe:
             return None
-        if self.storage.cleanup_locks():
-            kill_chrome_using_profile(self.storage.profile_dir)
-            time.sleep(0.3)
-            self.storage.cleanup_locks()
-        port = find_free_port()
-        self.logger.emit("로그인", "구글 로그인 창 실행 (브라우저에서 로그인을 완료해 주세요)")
-        cmd = [
-            chrome_exe,
-            f"--remote-debugging-port={port}",
-            f"--user-data-dir={self.storage.profile_dir.resolve()}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-background-mode",
-            "--window-size=1440,960",
-            target_url,
-        ]
-        self.chrome_proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return port
+        self.storage.acquire_profile_lock()
+        try:
+            if self.storage.cleanup_locks():
+                kill_chrome_using_profile(self.storage.profile_dir)
+                time.sleep(0.3)
+                self.storage.cleanup_locks()
+            port = find_free_port()
+            self.logger.emit("로그인", "구글 로그인 창 실행 (브라우저에서 로그인을 완료해 주세요)")
+            cmd = [
+                chrome_exe,
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={self.storage.profile_dir.resolve()}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-mode",
+                "--window-size=1440,960",
+                target_url,
+            ]
+            self.chrome_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if self.chrome_proc.pid:
+                self._tracked_pids.add(int(self.chrome_proc.pid))
+            return port
+        except Exception:
+            self.storage.release_profile_lock()
+            raise
 
     def wait_for_studio_tab_and_attach(self, port: int, wait_timeout: int) -> webdriver.Chrome:
         deadline = time.monotonic() + max(30, wait_timeout)
@@ -207,7 +243,15 @@ class BrowserManager:
                 if on_studio:
                     self.logger.debug("로그인", "AI Studio 탭 감지 -> Selenium 연결")
                     options = self.build_options(debugger_address=f"127.0.0.1:{port}")
-                    return webdriver.Chrome(options=options)
+                    driver = webdriver.Chrome(options=options)
+                    try:
+                        svc = getattr(driver, "service", None)
+                        proc = getattr(svc, "process", None) if svc else None
+                        if proc and proc.pid:
+                            self._tracked_pids.add(int(proc.pid))
+                    except Exception:
+                        pass
+                    return driver
             except Exception:
                 pass
             now = time.monotonic()
@@ -218,19 +262,36 @@ class BrowserManager:
         raise TimeoutError("구글 로그인 및 AI Studio 접속 대기 시간이 초과되었습니다.")
 
     def shutdown(self, driver: Optional[webdriver.Chrome]) -> None:
+        pids = set(self._tracked_pids)
         if driver is not None:
+            try:
+                svc = getattr(driver, "service", None)
+                proc = getattr(svc, "process", None) if svc else None
+                if proc and proc.pid:
+                    pids.add(int(proc.pid))
+            except Exception:
+                pass
             try:
                 driver.quit()
             except Exception:
                 pass
         if self.chrome_proc is not None:
+            if self.chrome_proc.pid:
+                pids.add(int(self.chrome_proc.pid))
             try:
                 if self.chrome_proc.poll() is None:
                     self.chrome_proc.terminate()
-                    self.chrome_proc.wait(timeout=5)
+                    self.chrome_proc.wait(timeout=3)
             except Exception:
                 pass
             self.chrome_proc = None
+
+        for pid in pids:
+            _kill_pid_tree(pid)
+        self._tracked_pids.clear()
+        kill_chrome_using_profile(self.storage.profile_dir)
+        self.storage.cleanup_locks()
+        self.storage.release_profile_lock()
 
     def js_click_selector(self, driver: webdriver.Chrome, selector: str, label: str = "") -> bool:
         clicked = bool(driver.execute_script(load_js("click_selector.js"), selector))

@@ -6,8 +6,8 @@ from pathlib import Path
 import queue
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Union
 
-from playground_on_python.api import PlayGround
-from playground_on_python.config import PlayGroundConfig
+from .api import PlayGround
+from .config import PlayGroundConfig
 
 
 class PlayGroundPool:

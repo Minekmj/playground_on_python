@@ -3,46 +3,30 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 import json
+import os
 from pathlib import Path
+import platform
 import shutil
+import threading
 from typing import Any, Dict, List, Optional, Union
 
-from playground_on_python.crypto import ProfileCrypto
-from playground_on_python.logger import PlayGroundLogger
+from .crypto import ProfileCrypto
+from .logger import PlayGroundLogger
 
 AI_STUDIO_BASE_URL = "https://aistudio.google.com"
 AI_STUDIO_NEW_CHAT_URL = f"{AI_STUDIO_BASE_URL}/prompts/new_chat"
 
+_THREAD_LOCKS_GUARD = threading.Lock()
+_THREAD_PROFILE_LOCKS: Dict[str, threading.RLock] = {}
+
 _IGNORED_PROFILE_DIRS = {
-    "Cache",
-    "Code Cache",
-    "GPUCache",
-    "DawnGraphiteCache",
-    "DawnWebGPUCache",
-    "GrShaderCache",
-    "ShaderCache",
-    "Crashpad",
-    "BrowserMetrics",
-    "Safe Browsing",
-    "OptimizationHints",
-    "component_crx_cache",
-    "extensions_crx_cache",
-    "OnDeviceHeadSuggestModel",
-    "hyphen-data",
-    "Subresource Filter",
-    "WidevineCdm",
-    "ZxcvbnData",
-    "FileTypePolicies",
-    "MEIPreload",
-    "SafetyTips",
-    "SSLErrorAssistant",
-    "Crowd Deny",
-    "CertificateRevocation",
-    "PKIMetadata",
-    "FirstPartySetsPreloaded",
-    "OriginTrials",
-    "Webstore Downloads",
-    "CacheStorage",
+    "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
+    "GrShaderCache", "ShaderCache", "Crashpad", "BrowserMetrics", "Safe Browsing",
+    "OptimizationHints", "component_crx_cache", "extensions_crx_cache",
+    "OnDeviceHeadSuggestModel", "hyphen-data", "Subresource Filter", "WidevineCdm",
+    "ZxcvbnData", "FileTypePolicies", "MEIPreload", "SafetyTips", "SSLErrorAssistant",
+    "Crowd Deny", "CertificateRevocation", "PKIMetadata", "FirstPartySetsPreloaded",
+    "OriginTrials", "Webstore Downloads", "CacheStorage",
 }
 
 _ESSENTIAL_PROFILE_REL_PATHS = (
@@ -73,6 +57,7 @@ class ProfileStorage:
         self.base_dir = self.root_dir / profile_name
         self.profile_dir = self.base_dir / "profile"
         self.backup_dir = self.base_dir / "backup"
+        self.lock_file_path = self.base_dir / "profile.lock"
 
         self.state_enc_file = self.base_dir / "state.enc"
         self.backup_state_enc_file = self.backup_dir / "state.enc"
@@ -95,8 +80,76 @@ class ProfileStorage:
             kp = Path(key_path) if key_path else (self.root_dir / "key.bmp")
             self.crypto = ProfileCrypto(kp)
 
+        self._lock_fp = None
+        self._thread_lock_held = False
+
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.backup_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_thread_lock(self) -> threading.RLock:
+        key = str(self.profile_dir.resolve()).lower()
+        with _THREAD_LOCKS_GUARD:
+            if key not in _THREAD_PROFILE_LOCKS:
+                _THREAD_PROFILE_LOCKS[key] = threading.RLock()
+            return _THREAD_PROFILE_LOCKS[key]
+
+    def acquire_profile_lock(self) -> None:
+        tlock = self._get_thread_lock()
+        if not tlock.acquire(blocking=False):
+            raise RuntimeError(
+                f"프로필 '{self.profile_name}'이(가) 이미 현재 프로세스에서 실행 중입니다. "
+                "동시 실행이 필요하면 PlayGroundPool 또는 clone_from을 사용하세요."
+            )
+        self._thread_lock_held = True
+        try:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            fp = self.lock_file_path.open("a+b")
+            fp.seek(0)
+            if fp.read(1) == b"":
+                fp.write(b"0")
+                fp.flush()
+            fp.seek(0)
+            if platform.system() == "Windows":
+                import msvcrt
+                msvcrt.locking(fp.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock_fp = fp
+        except Exception as exc:
+            try:
+                fp.close()
+            except Exception:
+                pass
+            self._thread_lock_held = False
+            tlock.release()
+            raise RuntimeError(
+                f"프로필 '{self.profile_name}'이(가) 다른 파이썬 프로세스에서 사용 중입니다."
+            ) from exc
+
+    def release_profile_lock(self) -> None:
+        if self._lock_fp is not None:
+            try:
+                self._lock_fp.seek(0)
+                if platform.system() == "Windows":
+                    import msvcrt
+                    msvcrt.locking(self._lock_fp.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self._lock_fp.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                self._lock_fp.close()
+            except Exception:
+                pass
+            self._lock_fp = None
+        if self._thread_lock_held:
+            self._thread_lock_held = False
+            try:
+                self._get_thread_lock().release()
+            except Exception:
+                pass
 
     def cleanup_locks(self) -> bool:
         still_locked = False
