@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "playground_on_python"
+version = "0.1.0"
+description = "Google AI Studio Playground Selenium automation wrapper"
+requires-python = ">=3.10"
+dependencies = [
+    "selenium>=4.18.0",
+    "cryptography>=42.0.0",
+]
+
+[tool.setuptools]
+packages = ["playground_on_python"]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+playground_on_python = "."
+
+[tool.setuptools.package-data]
+playground_on_python = ["js/*.js"]
