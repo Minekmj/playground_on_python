@@ -684,7 +684,7 @@ class AIStudioDOM:
                         stable_ticks += 1
                     else:
                         stable_ticks = 0
-                    needed = 1 if has_rerun else 2
+                    needed = 4 if has_rerun else 12
                     if stable_ticks >= needed:
                         self.logger.emit('완료', f'{len(cur_text)}자, 이미지 {image_count}개')
                         return {'text': cur_text, 'image_count': image_count}

@@ -2,14 +2,35 @@ const prevCount = arguments[0];
 const includeThoughts = Boolean(arguments[1]);
 const scroller = document.querySelector('ms-autoscroll-container');
 if (scroller) scroller.scrollTop = scroller.scrollHeight;
-const runBtn = document.querySelector('ms-run-button button');
+const isVisible = (el) => {
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+};
+const runBtns = Array.from(document.querySelectorAll('ms-run-button button'));
 let btnRunning = false;
-if (runBtn) {
-    const label = (runBtn.querySelector('.run-button-label')?.innerText || runBtn.getAttribute('aria-label') || '').toLowerCase();
-    btnRunning = runBtn.classList.contains('stoppable')
-        || !!runBtn.querySelector('.stoppable-spinner, .stoppable-stop')
+for (const btn of runBtns) {
+    if (!isVisible(btn)) continue;
+    const label = (
+        btn.querySelector('.run-button-label')?.innerText
+        || btn.innerText
+        || btn.getAttribute('aria-label')
+        || ''
+    ).toLowerCase();
+    const iconTxt = (btn.querySelector('.material-symbols-outlined, .google-symbols')?.textContent || '').trim().toLowerCase();
+    if (
+        btn.classList.contains('stoppable')
+        || !!btn.querySelector('.stoppable-spinner, .stoppable-stop, mat-spinner, mat-progress-spinner')
         || label.includes('stop')
-        || label.includes('중지');
+        || label.includes('중지')
+        || iconTxt === 'stop'
+        || iconTxt === 'stop_circle'
+    ) {
+        btnRunning = true;
+        break;
+    }
 }
 const turns = Array.from(document.querySelectorAll('ms-chat-session ms-chat-turn'));
 const newTurns = turns.slice(prevCount);
@@ -226,7 +247,12 @@ for (const turn of modelTurns) {
     }
 }
 const lastModelTurn = modelTurns.length > 0 ? modelTurns[modelTurns.length - 1] : null;
-const hasRerunBtn = !!(lastModelTurn && lastModelTurn.querySelector('button[name="rerun-button"]'));
+const hasRerunBtn = !!(
+    lastModelTurn
+    && Array.from(lastModelTurn.querySelectorAll(
+        'button[name="rerun-button"], .actions-container button[aria-label*="Good" i], .actions-container button[aria-label*="Copy" i], ms-chat-turn-options button'
+    )).some(b => isVisible(b) && !b.disabled)
+);
 const bodyText = chunks.join('\n\n').trim();
 const thoughtText = thoughtChunks.join('\n\n').trim();
 const finalText = (includeThoughts && thoughtText)
