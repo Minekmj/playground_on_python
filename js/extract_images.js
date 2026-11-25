@@ -11,7 +11,6 @@ const done = arguments[arguments.length - 1];
         const modelTurns = newTurns
             .slice(lastUserIdx + 1)
             .filter(t => t.querySelector('[data-turn-role="Model"]'));
-
         const imgs = [];
         for (const turn of modelTurns) {
             for (const img of turn.querySelectorAll('ms-image-chunk img.loaded-image, img.markdown-image')) {
@@ -20,7 +19,6 @@ const done = arguments[arguments.length - 1];
                 }
             }
         }
-
         const out = [];
         for (const img of imgs) {
             let dataUrl = '';

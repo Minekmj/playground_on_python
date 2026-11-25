@@ -1,7 +1,6 @@
 const gallerySels = arguments[0];
 const keywords = arguments[1];
 const target = arguments[2];
-
 const tryGallery = (root) => {
     if (!root) return false;
     const btns = Array.from(root.querySelectorAll('button, [role="button"], .toggle-button'));
@@ -19,7 +18,6 @@ const tryGallery = (root) => {
     }
     return false;
 };
-
 for (const sel of gallerySels) {
     const g = document.querySelector(sel);
     if (g && tryGallery(g)) return true;

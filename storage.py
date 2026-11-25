@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import base64
 from datetime import datetime
 import json
@@ -9,80 +8,53 @@ import platform
 import shutil
 import threading
 from typing import Any, Dict, List, Optional, Union
-
 from .crypto import ProfileCrypto
 from .logger import PlayGroundLogger
 
-AI_STUDIO_BASE_URL = "https://aistudio.google.com"
-AI_STUDIO_NEW_CHAT_URL = f"{AI_STUDIO_BASE_URL}/prompts/new_chat"
-
+AI_STUDIO_BASE_URL = 'https://aistudio.google.com'
+AI_STUDIO_NEW_CHAT_URL = f'{AI_STUDIO_BASE_URL}/prompts/new_chat'
 _THREAD_LOCKS_GUARD = threading.Lock()
 _THREAD_PROFILE_LOCKS: Dict[str, threading.RLock] = {}
-
-_IGNORED_PROFILE_DIRS = {
-    "Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache",
-    "GrShaderCache", "ShaderCache", "Crashpad", "BrowserMetrics", "Safe Browsing",
-    "OptimizationHints", "component_crx_cache", "extensions_crx_cache",
-    "OnDeviceHeadSuggestModel", "hyphen-data", "Subresource Filter", "WidevineCdm",
-    "ZxcvbnData", "FileTypePolicies", "MEIPreload", "SafetyTips", "SSLErrorAssistant",
-    "Crowd Deny", "CertificateRevocation", "PKIMetadata", "FirstPartySetsPreloaded",
-    "OriginTrials", "Webstore Downloads", "CacheStorage",
-}
-
-_ESSENTIAL_PROFILE_REL_PATHS = (
-    "Local State",
-    "Default/Cookies",
-    "Default/Network",
-    "Default/Local Storage",
-    "Default/Session Storage",
-    "Default/IndexedDB",
-    "Default/Preferences",
-    "Default/Secure Preferences",
-    "Default/Web Data",
-    "Default/Login Data",
-)
+_IGNORED_PROFILE_DIRS = {'Cache', 'Code Cache', 'GPUCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'GrShaderCache', 'ShaderCache', 'Crashpad', 'BrowserMetrics', 'Safe Browsing', 'OptimizationHints', 'component_crx_cache', 'extensions_crx_cache', 'OnDeviceHeadSuggestModel', 'hyphen-data', 'Subresource Filter', 'WidevineCdm', 'ZxcvbnData', 'FileTypePolicies', 'MEIPreload', 'SafetyTips', 'SSLErrorAssistant', 'Crowd Deny', 'CertificateRevocation', 'PKIMetadata', 'FirstPartySetsPreloaded', 'OriginTrials', 'Webstore Downloads', 'CacheStorage'}
+_ESSENTIAL_PROFILE_REL_PATHS = ('Local State', 'Default/Cookies', 'Default/Network', 'Default/Local Storage', 'Default/Session Storage', 'Default/IndexedDB', 'Default/Preferences', 'Default/Secure Preferences', 'Default/Web Data', 'Default/Login Data')
 
 
 class ProfileStorage:
+
     def __init__(
         self,
         base_dir: Optional[Union[str, Path]],
         profile_name: str,
         logger: PlayGroundLogger,
-        encrypt: bool = True,
-        key_path: Optional[Union[str, Path]] = None,
+        encrypt: bool=True,
+        key_path: Optional[Union[str, Path]]=None,
     ) -> None:
-        self.root_dir = Path(base_dir) if base_dir else (Path(__file__).resolve().parent / ".pg_data")
+        self.root_dir = Path(base_dir) if base_dir else Path(__file__).resolve().parent / '.pg_data'
         self.profile_name = profile_name
         self.base_dir = self.root_dir / profile_name
-        self.profile_dir = self.base_dir / "profile"
-        self.backup_dir = self.base_dir / "backup"
-        self.lock_file_path = self.base_dir / "profile.lock"
-
-        self.state_enc_file = self.base_dir / "state.enc"
-        self.backup_state_enc_file = self.backup_dir / "state.enc"
-        self.cookies_enc_file = self.base_dir / "cookies.enc"
-        self.backup_cookies_enc_file = self.backup_dir / "cookies.enc"
-        self.history_enc_file = self.backup_dir / "history_backup.enc"
-        self.backup_profile_enc_file = self.backup_dir / "profile_data.enc"
-
-        self.state_plain_file = self.base_dir / "state.json"
-        self.backup_state_plain_file = self.backup_dir / "state.json"
-        self.cookies_plain_file = self.base_dir / "cookies.json"
-        self.backup_cookies_plain_file = self.backup_dir / "cookies.json"
-        self.history_plain_file = self.backup_dir / "history_backup.jsonl"
-        self.backup_profile_plain_dir = self.backup_dir / "profile_snapshot"
-
+        self.profile_dir = self.base_dir / 'profile'
+        self.backup_dir = self.base_dir / 'backup'
+        self.lock_file_path = self.base_dir / 'profile.lock'
+        self.state_enc_file = self.base_dir / 'state.enc'
+        self.backup_state_enc_file = self.backup_dir / 'state.enc'
+        self.cookies_enc_file = self.base_dir / 'cookies.enc'
+        self.backup_cookies_enc_file = self.backup_dir / 'cookies.enc'
+        self.history_enc_file = self.backup_dir / 'history_backup.enc'
+        self.backup_profile_enc_file = self.backup_dir / 'profile_data.enc'
+        self.state_plain_file = self.base_dir / 'state.json'
+        self.backup_state_plain_file = self.backup_dir / 'state.json'
+        self.cookies_plain_file = self.base_dir / 'cookies.json'
+        self.backup_cookies_plain_file = self.backup_dir / 'cookies.json'
+        self.history_plain_file = self.backup_dir / 'history_backup.jsonl'
+        self.backup_profile_plain_dir = self.backup_dir / 'profile_snapshot'
         self.logger = logger
         self.encrypt = bool(encrypt)
         self.crypto: Optional[ProfileCrypto] = None
         if self.encrypt:
-            kp = Path(key_path) if key_path else (self.root_dir / "key.bmp")
+            kp = Path(key_path) if key_path else self.root_dir / 'key.bmp'
             self.crypto = ProfileCrypto(kp)
-
         self._lock_fp = None
         self._thread_lock_held = False
-
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.backup_dir.mkdir(parents=True, exist_ok=True)
 
@@ -96,20 +68,17 @@ class ProfileStorage:
     def acquire_profile_lock(self) -> None:
         tlock = self._get_thread_lock()
         if not tlock.acquire(blocking=False):
-            raise RuntimeError(
-                f"프로필 '{self.profile_name}'이(가) 이미 현재 프로세스에서 실행 중입니다. "
-                "동시 실행이 필요하면 PlayGroundPool 또는 clone_from을 사용하세요."
-            )
+            raise RuntimeError(f"프로필 '{self.profile_name}'이(가) 이미 현재 프로세스에서 실행 중입니다. 동시 실행이 필요하면 PlayGroundPool 또는 clone_from을 사용하세요.")
         self._thread_lock_held = True
         try:
             self.base_dir.mkdir(parents=True, exist_ok=True)
-            fp = self.lock_file_path.open("a+b")
+            fp = self.lock_file_path.open('a+b')
             fp.seek(0)
-            if fp.read(1) == b"":
-                fp.write(b"0")
+            if fp.read(1) == b'':
+                fp.write(b'0')
                 fp.flush()
             fp.seek(0)
-            if platform.system() == "Windows":
+            if platform.system() == 'Windows':
                 import msvcrt
                 msvcrt.locking(fp.fileno(), msvcrt.LK_NBLCK, 1)
             else:
@@ -123,15 +92,13 @@ class ProfileStorage:
                 pass
             self._thread_lock_held = False
             tlock.release()
-            raise RuntimeError(
-                f"프로필 '{self.profile_name}'이(가) 다른 파이썬 프로세스에서 사용 중입니다."
-            ) from exc
+            raise RuntimeError(f"프로필 '{self.profile_name}'이(가) 다른 파이썬 프로세스에서 사용 중입니다.") from exc
 
     def release_profile_lock(self) -> None:
         if self._lock_fp is not None:
             try:
                 self._lock_fp.seek(0)
-                if platform.system() == "Windows":
+                if platform.system() == 'Windows':
                     import msvcrt
                     msvcrt.locking(self._lock_fp.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
@@ -153,7 +120,7 @@ class ProfileStorage:
 
     def cleanup_locks(self) -> bool:
         still_locked = False
-        for lock_name in ("SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile", "DevToolsActivePort"):
+        for lock_name in ('SingletonLock', 'SingletonCookie', 'SingletonSocket', 'lockfile', 'DevToolsActivePort'):
             target = self.profile_dir / lock_name
             if target.exists() or target.is_symlink():
                 try:
@@ -166,21 +133,10 @@ class ProfileStorage:
         return self.profile_dir.exists() and any(self.profile_dir.iterdir())
 
     def has_backup_data(self) -> bool:
-        return (
-            self.backup_profile_enc_file.is_file()
-            or self.backup_cookies_enc_file.is_file()
-            or (self.backup_profile_plain_dir.exists() and any(self.backup_profile_plain_dir.iterdir()))
-            or self.backup_cookies_plain_file.is_file()
-        )
+        return self.backup_profile_enc_file.is_file() or self.backup_cookies_enc_file.is_file() or (self.backup_profile_plain_dir.exists() and any(self.backup_profile_plain_dir.iterdir())) or self.backup_cookies_plain_file.is_file()
 
     def has_any_saved_session(self) -> bool:
-        return (
-            self.has_backup_data()
-            or self.cookies_enc_file.is_file()
-            or self.cookies_plain_file.is_file()
-            or self.state_enc_file.is_file()
-            or self.state_plain_file.is_file()
-        )
+        return self.has_backup_data() or self.cookies_enc_file.is_file() or self.cookies_plain_file.is_file() or self.state_enc_file.is_file() or self.state_plain_file.is_file()
 
     def wipe_runtime_profile(self) -> None:
         if self.profile_dir.exists():
@@ -197,13 +153,8 @@ class ProfileStorage:
         if dst.exists():
             shutil.rmtree(dst, ignore_errors=True)
         dst.mkdir(parents=True, exist_ok=True)
-
         def _ignore(_cur_dir: str, names: List[str]) -> List[str]:
-            return [
-                name for name in names
-                if name in _IGNORED_PROFILE_DIRS or name.startswith("Singleton") or name == "lockfile"
-            ]
-
+            return [name for name in names if name in _IGNORED_PROFILE_DIRS or name.startswith('Singleton') or name == 'lockfile']
         for target in self._essential_targets(src):
             rel = target.relative_to(src)
             dest_item = dst / rel
@@ -221,17 +172,12 @@ class ProfileStorage:
             return
         if self.crypto is not None:
             targets = self._essential_targets(self.profile_dir)
-            self.crypto.encrypt_files_to_archive(
-                self.profile_dir,
-                targets,
-                self.backup_profile_enc_file,
-                ignore_names=_IGNORED_PROFILE_DIRS,
-            )
+            self.crypto.encrypt_files_to_archive(self.profile_dir, targets, self.backup_profile_enc_file, ignore_names=_IGNORED_PROFILE_DIRS)
             if self.backup_profile_plain_dir.exists():
                 shutil.rmtree(self.backup_profile_plain_dir, ignore_errors=True)
         else:
             self._copy_essential_tree(self.profile_dir, self.backup_profile_plain_dir)
-        self.logger.emit("백업", "프로필 데이터 백업 완료")
+        self.logger.emit('백업', '프로필 데이터 백업 완료')
 
     def restore_profile_from_backup(self) -> bool:
         if self.crypto is not None and self.backup_profile_enc_file.is_file():
@@ -243,17 +189,15 @@ class ProfileStorage:
             return True
         return False
 
-    def clone_from_profile(self, source_profile: str, force: bool = False) -> None:
+    def clone_from_profile(self, source_profile: str, force: bool=False) -> None:
         if source_profile == self.profile_name:
             return
         if not force and self.has_profile_data():
             return
-
         src_base = self.root_dir / source_profile
-        src_enc = src_base / "backup" / "profile_data.enc"
-        src_plain = src_base / "backup" / "profile_snapshot"
-        src_live = src_base / "profile"
-
+        src_enc = src_base / 'backup' / 'profile_data.enc'
+        src_plain = src_base / 'backup' / 'profile_snapshot'
+        src_live = src_base / 'profile'
         if self.crypto is not None and src_enc.is_file():
             self.wipe_runtime_profile()
             self.crypto.decrypt_archive_to_dir(src_enc, self.profile_dir)
@@ -268,24 +212,16 @@ class ProfileStorage:
                 self.backup_profile()
         else:
             raise FileNotFoundError(f"복제할 원본 프로필('{source_profile}')이 없습니다.")
-
-        src_storage = ProfileStorage(
-            base_dir=self.root_dir,
-            profile_name=source_profile,
-            logger=self.logger,
-            encrypt=self.encrypt,
-            key_path=self.crypto.key_bmp_path if self.crypto else None,
-        )
+        src_storage = ProfileStorage(base_dir=self.root_dir, profile_name=source_profile, logger=self.logger, encrypt=self.encrypt, key_path=self.crypto.key_bmp_path if self.crypto else None)
         src_state = src_storage.load_state(backup=True)
         if src_state:
-            src_state["prompt_url"] = AI_STUDIO_NEW_CHAT_URL
-            src_state["prompt_id"] = ""
+            src_state['prompt_url'] = AI_STUDIO_NEW_CHAT_URL
+            src_state['prompt_id'] = ''
             self.save_state(src_state, backup=True)
         src_cookies = src_storage.load_cookies(backup=True)
         if src_cookies:
             self.save_cookies(src_cookies, backup=True)
-
-        self.logger.emit("복제", f"'{source_profile}' -> '{self.profile_name}'")
+        self.logger.emit('복제', f"'{source_profile}' -> '{self.profile_name}'")
 
     def _read_json_encrypted_or_plain(self, enc_path: Path, plain_path: Path) -> Any:
         if self.crypto is not None and enc_path.is_file():
@@ -295,7 +231,7 @@ class ProfileStorage:
                 pass
         if plain_path.is_file():
             try:
-                return json.loads(plain_path.read_text(encoding="utf-8"))
+                return json.loads(plain_path.read_text(encoding='utf-8'))
             except Exception:
                 pass
         return None
@@ -312,14 +248,10 @@ class ProfileStorage:
                     pass
         else:
             plain_path.parent.mkdir(parents=True, exist_ok=True)
-            plain_path.write_text(raw, encoding="utf-8")
+            plain_path.write_text(raw, encoding='utf-8')
 
     def load_state(self, backup: bool) -> Dict[str, Any]:
-        pairs = (
-            [(self.backup_state_enc_file, self.backup_state_plain_file), (self.state_enc_file, self.state_plain_file)]
-            if backup
-            else [(self.state_enc_file, self.state_plain_file), (self.backup_state_enc_file, self.backup_state_plain_file)]
-        )
+        pairs = [(self.backup_state_enc_file, self.backup_state_plain_file), (self.state_enc_file, self.state_plain_file)] if backup else [(self.state_enc_file, self.state_plain_file), (self.backup_state_enc_file, self.backup_state_plain_file)]
         for enc_p, plain_p in pairs:
             data = self._read_json_encrypted_or_plain(enc_p, plain_p)
             if isinstance(data, dict):
@@ -327,10 +259,7 @@ class ProfileStorage:
         return {}
 
     def save_state(self, info: Dict[str, Any], backup: bool) -> Dict[str, Any]:
-        state = {
-            **info,
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
+        state = {**info, 'updated_at': datetime.now().isoformat(timespec='seconds')}
         self._write_json_encrypted_or_plain(state, self.state_enc_file, self.state_plain_file)
         if backup:
             self._write_json_encrypted_or_plain(state, self.backup_state_enc_file, self.backup_state_plain_file)
@@ -344,35 +273,30 @@ class ProfileStorage:
             self._write_json_encrypted_or_plain(cookies, self.backup_cookies_enc_file, self.backup_cookies_plain_file)
 
     def load_cookies(self, backup: bool) -> List[Dict[str, Any]]:
-        pairs = (
-            [(self.backup_cookies_enc_file, self.backup_cookies_plain_file), (self.cookies_enc_file, self.cookies_plain_file)]
-            if backup
-            else [(self.cookies_enc_file, self.cookies_plain_file), (self.backup_cookies_enc_file, self.backup_cookies_plain_file)]
-        )
+        pairs = [(self.backup_cookies_enc_file, self.backup_cookies_plain_file), (self.cookies_enc_file, self.cookies_plain_file)] if backup else [(self.cookies_enc_file, self.cookies_plain_file), (self.backup_cookies_enc_file, self.backup_cookies_plain_file)]
         for enc_p, plain_p in pairs:
             data = self._read_json_encrypted_or_plain(enc_p, plain_p)
             if isinstance(data, list):
                 return data
         return []
 
-    def append_history(self, prompt_url: str, prompt_text: str, response_text: str, meta: Dict[str, Any]) -> None:
+    def append_history(
+        self,
+        prompt_url: str,
+        prompt_text: str,
+        response_text: str,
+        meta: Dict[str, Any],
+    ) -> None:
         try:
             self.backup_dir.mkdir(parents=True, exist_ok=True)
-            record = {
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-                "client_id": self.profile_name,
-                "prompt_url": prompt_url,
-                "meta": meta,
-                "prompt": prompt_text,
-                "response": response_text,
-            }
+            record = {'timestamp': datetime.now().isoformat(timespec='seconds'), 'client_id': self.profile_name, 'prompt_url': prompt_url, 'meta': meta, 'prompt': prompt_text, 'response': response_text}
             line = json.dumps(record, ensure_ascii=False)
             if self.crypto is not None:
-                token = base64.b64encode(self.crypto.encrypt_text(line)).decode("ascii")
-                with self.history_enc_file.open("a", encoding="utf-8") as fp:
-                    fp.write(token + "\n")
+                token = base64.b64encode(self.crypto.encrypt_text(line)).decode('ascii')
+                with self.history_enc_file.open('a', encoding='utf-8') as fp:
+                    fp.write(token + '\n')
             else:
-                with self.history_plain_file.open("a", encoding="utf-8") as fp:
-                    fp.write(line + "\n")
+                with self.history_plain_file.open('a', encoding='utf-8') as fp:
+                    fp.write(line + '\n')
         except Exception:
             pass

@@ -6,7 +6,6 @@ for (const row of document.querySelectorAll('ms-model-carousel-row')) {
     const title = (row.querySelector('.model-title-text')?.innerText || '').trim();
     const subtitle = (row.querySelector('.model-subtitle')?.innerText || '').trim();
     if (!title && !subtitle) continue;
-
     const badges = [];
     let isPaid = false;
     for (const b of row.querySelectorAll('ms-badge')) {
@@ -17,7 +16,6 @@ for (const row of document.querySelectorAll('ms-model-carousel-row')) {
             isPaid = true;
         }
     }
-
     const detailsTxt = Array.from(row.querySelectorAll('.model-details li, .agent-pricing-row'))
         .map(el => (el.innerText || '').trim())
         .join(' | ');
@@ -32,10 +30,8 @@ for (const row of document.querySelectorAll('ms-model-carousel-row')) {
     ) {
         isPaid = true;
     }
-
     const icon = (row.querySelector('.model-icon')?.innerText || '').trim();
     const selected = row.classList.contains('selected');
-
     let modelId = '';
     const candidates = (subtitle + ' ' + title).match(/[a-z0-9][a-z0-9._-]*-(?:[a-z0-9._-]+)+/gi) || [];
     if (candidates.length > 0) {
@@ -43,7 +39,6 @@ for (const row of document.querySelectorAll('ms-model-carousel-row')) {
     } else {
         modelId = title.toLowerCase().replace(/\s+/g, '-');
     }
-
     out.push({
         id: modelId,
         name: title,
