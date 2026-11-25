@@ -102,8 +102,8 @@ class AIStudioDOM:
 
     def wait_no_overlay_backdrop(self, driver: webdriver.Chrome, timeout: float=1.5) -> None:
         script = load_js('has_overlay_backdrop.js')
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        deadline = None if (timeout is None or timeout <= 0) else (time.monotonic() + timeout)
+        while deadline is None or time.monotonic() < deadline:
             if not driver.execute_script(script):
                 return
             time.sleep(0.05)
@@ -601,7 +601,7 @@ class AIStudioDOM:
         prev_count: int,
         include_thoughts: bool=False,
     ) -> Dict[str, Any]:
-        return driver.execute_script(load_js('response_state.js'), prev_count, include_thoughts) or {'totalTurns': prev_count, 'hasUserTurn': False, 'hasModelTurn': False, 'isGenerating': False, 'hasRerunBtn': False, 'errors': [], 'text': '', 'bodyLength': 0, 'imageCount': 0}
+        return driver.execute_script(load_js('response_state.js'), prev_count, include_thoughts) or {'totalTurns': prev_count, 'hasUserTurn': False, 'hasModelTurn': False, 'isGenerating': False, 'hasRerunBtn': False, 'errors': [], 'text': '', 'bodyLength': 0, 'thoughtLength': 0, 'imageCount': 0}
 
     def extract_generated_images(
         self,
@@ -654,15 +654,18 @@ class AIStudioDOM:
         self,
         driver: webdriver.Chrome,
         prev_count: int,
-        timeout: int,
+        timeout: Optional[int]=None,
         include_thoughts: bool=False,
     ) -> Dict[str, Any]:
-        deadline = time.monotonic() + timeout
+        deadline = None if (timeout is None or timeout <= 0) else (time.monotonic() + timeout)
         saw_running = False
-        last_sig = ('', 0)
+        last_sig = ('', 0, 0)
         stable_ticks = 0
         empty_idle_ticks = 0
-        while time.monotonic() < deadline:
+        tick_idx = 0
+        last_dbg_flags = None
+        while deadline is None or time.monotonic() < deadline:
+            tick_idx += 1
             state = self.get_response_state(driver, prev_count, include_thoughts=include_thoughts)
             if state['errors']:
                 err = ' | '.join(state['errors'])
@@ -671,12 +674,26 @@ class AIStudioDOM:
             generating = bool(state['isGenerating'])
             cur_text = str(state['text'] or '')
             body_len = int(state.get('bodyLength', 0))
+            thought_len = int(state.get('thoughtLength', 0))
             image_count = int(state.get('imageCount', 0))
             has_model_turn = bool(state['hasModelTurn'])
             has_rerun = bool(state.get('hasRerunBtn'))
+            btn_running = bool(state.get('btnRunning'))
+            active_ind = bool(state.get('activeIndicator'))
+            dbg_flags = (generating, btn_running, active_ind, has_model_turn, has_rerun, body_len > 0, thought_len > 0)
+            if dbg_flags != last_dbg_flags or tick_idx % 20 == 0:
+                last_dbg_flags = dbg_flags
+                dbg = state.get('debug') or {}
+                self.logger.debug(
+                    '응답대기',
+                    f'tick={tick_idx} gen={generating}(btn={btn_running},ind={active_ind}) '
+                    f'model={has_model_turn} rerun={has_rerun} body={body_len} thought={thought_len} '
+                    f'img={image_count} stable={stable_ticks} promptEmpty={dbg.get("promptEmpty")} '
+                    f'runBtns={dbg.get("runBtns")} turnBtns={dbg.get("turnBtns")}'
+                )
             if generating:
                 saw_running = True
-            cur_sig = (cur_text, image_count)
+            cur_sig = (cur_text, image_count, thought_len)
             if not generating and has_model_turn:
                 if body_len > 0 or image_count > 0:
                     empty_idle_ticks = 0
@@ -684,15 +701,23 @@ class AIStudioDOM:
                         stable_ticks += 1
                     else:
                         stable_ticks = 0
-                    needed = 4 if has_rerun else 12
+                    needed = 6 if has_rerun else 20
                     if stable_ticks >= needed:
+                        dbg = state.get('debug') or {}
+                        self.logger.debug(
+                            '응답완료판정',
+                            f'tick={tick_idx} needed={needed} rerun={has_rerun} body={body_len} thought={thought_len} '
+                            f'runHost={dbg.get("runHost")}'
+                        )
                         self.logger.emit('완료', f'{len(cur_text)}자, 이미지 {image_count}개')
                         return {'text': cur_text, 'image_count': image_count}
                 else:
                     stable_ticks = 0
-                    if saw_running:
+                    if cur_sig != last_sig:
+                        empty_idle_ticks = 0
+                    elif saw_running:
                         empty_idle_ticks += 1
-                        if empty_idle_ticks >= 40:
+                        if empty_idle_ticks >= 80:
                             return {'text': cur_text, 'image_count': image_count}
             else:
                 stable_ticks = 0

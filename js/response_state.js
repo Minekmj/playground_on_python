@@ -9,6 +9,8 @@ const isVisible = (el) => {
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0;
 };
+const promptTa = document.querySelector('ms-prompt-box textarea[formcontrolname="promptText"], ms-prompt-box textarea[aria-label="Enter a prompt"]');
+const promptEmpty = !promptTa || !(promptTa.value || '').trim();
 const runBtns = Array.from(document.querySelectorAll('ms-run-button button'));
 let btnRunning = false;
 for (const btn of runBtns) {
@@ -20,13 +22,19 @@ for (const btn of runBtns) {
         || ''
     ).toLowerCase();
     const iconTxt = (btn.querySelector('.material-symbols-outlined, .google-symbols')?.textContent || '').trim().toLowerCase();
+    const hasStopRect = !!btn.querySelector('svg rect');
+    const isEnabledStopCandidate = promptEmpty && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true';
     if (
         btn.classList.contains('stoppable')
         || !!btn.querySelector('.stoppable-spinner, .stoppable-stop, mat-spinner, mat-progress-spinner')
         || label.includes('stop')
         || label.includes('중지')
+        || label.includes('cancel')
         || iconTxt === 'stop'
         || iconTxt === 'stop_circle'
+        || iconTxt === 'square'
+        || hasStopRect
+        || isEnabledStopCandidate
     ) {
         btnRunning = true;
         break;
@@ -74,28 +82,46 @@ const serializeList = (listEl, ordered, depth) => {
     const items = [];
     let num = parseInt(listEl.getAttribute('start') || '1', 10) || 1;
     const indent = '  '.repeat(depth);
-    for (const child of listEl.children) {
-        if (child.tagName !== 'LI') continue;
+    const directLis = Array.from(listEl.querySelectorAll('li')).filter(
+        li => li.closest('ul, ol') === listEl
+    );
+    for (const child of directLis) {
         const prefix = ordered ? `${num}. ` : '- ';
         if (ordered) num += 1;
         let mainParts = [];
         let subLists = [];
-        for (const liChild of child.childNodes) {
-            if (liChild.nodeType === 1 && (liChild.tagName === 'UL' || liChild.tagName === 'OL')) {
-                subLists.push(serializeList(liChild, liChild.tagName === 'OL', depth + 1));
-            } else {
-                const part = nodeToMd(liChild, { inPre: false, listDepth: depth + 1 });
-                if (part) mainParts.push(part);
+        const walkLi = (node) => {
+            if (!node) return;
+            if (node.nodeType === 1 && (node.tagName === 'UL' || node.tagName === 'OL')) {
+                subLists.push(serializeList(node, node.tagName === 'OL', depth + 1).trimEnd());
+                return;
             }
+            if (
+                node.nodeType === 1
+                && !isIgnoredNode(node)
+                && !['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'MS-CODE-BLOCK', 'TABLE', 'MS-KATEX'].includes(node.tagName)
+                && node.querySelector
+                && node.querySelector('ul, ol')
+            ) {
+                for (const sub of node.childNodes) {
+                    walkLi(sub);
+                }
+                return;
+            }
+            const part = nodeToMd(node, { inPre: false, listDepth: depth + 1 });
+            if (part) mainParts.push(part);
+        };
+        for (const liChild of child.childNodes) {
+            walkLi(liChild);
         }
         const body = mainParts.join('').replace(/\n{3,}/g, '\n\n').trim().replace(/\n/g, `\n${indent}  `);
         let line = `${indent}${prefix}${body}`;
         if (subLists.length > 0) {
-            line += '\n' + subLists.join('\n');
+            line += '\n' + subLists.map(s => s.replace(/^\n+/, '')).join('\n');
         }
         items.push(line);
     }
-    return '\n\n' + items.join('\n') + '\n\n';
+    return items.length > 0 ? '\n\n' + items.join('\n') + '\n\n' : '';
 };
 const serializeTable = (tableEl) => {
     const rows = Array.from(tableEl.querySelectorAll('tr'));
@@ -218,9 +244,26 @@ const extractCleanMarkdown = (tc) => {
     const raw = nodeToMd(tc, { inPre: false, listDepth: 0 });
     return raw.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 };
+let thoughtLength = 0;
 for (const turn of modelTurns) {
-    if (turn.querySelector('loading-indicator, .thinking-progress-icon.in-progress, ms-code-block .container.generating, ms-image-chunk .spinner-container')) {
+    if (turn.querySelector('loading-indicator, mat-progress-bar, mat-progress-spinner, mat-spinner, [role="progressbar"], .thinking-progress-icon.in-progress, ms-code-block .container.generating, ms-image-chunk .spinner-container, .generating, .streaming, .in-progress')) {
         activeIndicator = true;
+    }
+    if (!activeIndicator) {
+        const statusEls = turn.querySelectorAll('ms-thought-chunk > div, ms-thought-chunk span, ms-thought-chunk p, .thinking-header, .thought-header, .turn-status, .status-text, [class*="thinking"], [class*="status"]');
+        for (const el of statusEls) {
+            if (!isVisible(el)) continue;
+            if (el.closest('ms-text-chunk') && !el.closest('ms-thought-chunk')) continue;
+            const t = (el.textContent || '').trim();
+            if (t.length > 0 && t.length <= 80 && /^(still\s+(thinking|working|generating|reasoning)|thinking\.{2,3}|generating\.{2,3}|생각\s*중|생성\s*중)/i.test(t)) {
+                activeIndicator = true;
+                break;
+            }
+        }
+    }
+    for (const thEl of turn.querySelectorAll('ms-thought-chunk')) {
+        const thTxt = (thEl.innerText || thEl.textContent || '').trim();
+        thoughtLength += thTxt.length;
     }
     const errEl = turn.querySelector('.model-error');
     if (errEl) {
@@ -246,26 +289,62 @@ for (const turn of modelTurns) {
         if (text) chunks.push(text);
     }
 }
+if (!activeIndicator) {
+    const globalStatusEls = document.querySelectorAll('ms-chat-session [class*="status"], ms-chat-session [class*="thinking"], ms-chat-session [class*="progress"], ms-autoscroll-container [class*="loading"]');
+    for (const el of globalStatusEls) {
+        if (!isVisible(el)) continue;
+        if (el.closest('ms-text-chunk') && !el.closest('ms-thought-chunk')) continue;
+        const t = (el.textContent || '').trim();
+        if (t.length > 0 && t.length <= 80 && /^(still\s+(thinking|working|generating|reasoning)|생각\s*중|생성\s*중)/i.test(t)) {
+            activeIndicator = true;
+            break;
+        }
+    }
+}
 const lastModelTurn = modelTurns.length > 0 ? modelTurns[modelTurns.length - 1] : null;
 const hasRerunBtn = !!(
     lastModelTurn
-    && Array.from(lastModelTurn.querySelectorAll(
-        'button[name="rerun-button"], .actions-container button[aria-label*="Good" i], .actions-container button[aria-label*="Copy" i], ms-chat-turn-options button'
-    )).some(b => isVisible(b) && !b.disabled)
+    && Array.from(lastModelTurn.querySelectorAll('button[name="rerun-button"]')).some(b => isVisible(b) && !b.disabled)
 );
 const bodyText = chunks.join('\n\n').trim();
 const thoughtText = thoughtChunks.join('\n\n').trim();
 const finalText = (includeThoughts && thoughtText)
     ? ("[Thoughts]\n" + thoughtText + "\n\n[Answer]\n" + bodyText).trim()
     : bodyText;
+const debugRunBtns = runBtns.map(b => ({
+    vis: isVisible(b),
+    dis: !!b.disabled,
+    ariaDis: b.getAttribute('aria-disabled'),
+    ariaLbl: b.getAttribute('aria-label') || '',
+    cls: b.className || '',
+    txt: (b.innerText || '').trim().slice(0, 40)
+}));
+const debugTurnBtns = lastModelTurn
+    ? Array.from(lastModelTurn.querySelectorAll('button')).filter(b => isVisible(b)).slice(0, 12).map(b => ({
+        name: b.getAttribute('name') || '',
+        ariaLbl: b.getAttribute('aria-label') || '',
+        dis: !!b.disabled,
+        txt: (b.innerText || '').trim().slice(0, 30)
+    }))
+    : [];
+const debugRunHost = (document.querySelector('ms-run-button')?.outerHTML || '').slice(0, 300);
 return {
     totalTurns: turns.length,
     hasUserTurn: hasUserTurn,
     hasModelTurn: modelTurns.length > 0,
     isGenerating: btnRunning || activeIndicator,
+    btnRunning: btnRunning,
+    activeIndicator: activeIndicator,
     hasRerunBtn: hasRerunBtn,
     errors: errors,
     text: finalText,
     bodyLength: bodyText.length,
-    imageCount: imageCount
+    thoughtLength: thoughtLength,
+    imageCount: imageCount,
+    debug: {
+        promptEmpty: promptEmpty,
+        runBtns: debugRunBtns,
+        turnBtns: debugTurnBtns,
+        runHost: debugRunHost
+    }
 };

@@ -26,7 +26,7 @@ class PlayGround:
         encrypt: bool=True,
         key_path: Optional[Union[str, Path]]=None,
         wipe_runtime_profile: bool=False,
-        timeout: int=180,
+        timeout: Optional[int]=None,
         verbose: Union[bool, str]=True,
         log_cb: Optional[Callable[[str], None]]=None,
         default_config: Optional[PlayGroundConfig]=None,
@@ -38,7 +38,7 @@ class PlayGround:
         refresh_clone: True면 연결 시 원본에서 다시 복제
         encrypt: 쿠키/상태/히스토리 암호화 여부 (key.bmp 사용)
         wipe_runtime_profile: 종료 시 런타임 프로필 폴더 삭제 여부
-        timeout: 기본 응답 대기 시간(초)
+        timeout: 기본 응답 대기 시간(초, None 또는 0 이하이면 무제한)
         verbose: 로그 출력 수준 (True/False/'debug')
         default_config: send() 호출 시 기본으로 적용할 PlayGroundConfig
         """
@@ -47,7 +47,7 @@ class PlayGround:
         self.refresh_clone = bool(refresh_clone)
         self.encrypt = bool(encrypt)
         self.wipe_runtime_profile = bool(wipe_runtime_profile)
-        self.timeout = max(30, int(timeout))
+        self.timeout = None if (timeout is None or int(timeout) <= 0) else max(30, int(timeout))
         self.default_config = default_config or PlayGroundConfig()
         self.logger = PlayGroundLogger(client_id=profile_name, verbose=verbose, callback=log_cb)
         self.storage = ProfileStorage(base_dir=base_dir, profile_name=profile_name, logger=self.logger, encrypt=self.encrypt, key_path=key_path)
@@ -444,7 +444,7 @@ class PlayGround:
         effective_cfg = base_cfg.merged(model=model, system_input=system_input, temp=temp, thinnk=thinnk, thinking_budget=thinking_budget, google_search=google_search, url_context=url_context, code_execution=code_execution, structured_output=structured_output, function_calling=function_calling, media_resolution=media_resolution, max_output_tokens=max_output_tokens, stop_sequences=stop_sequences, safety_settings=safety_settings, top_p=top_p, seed=seed, aspect_ratio=aspect_ratio, image_size=image_size, output_modality=output_modality, number_of_images=number_of_images, negative_prompt=negative_prompt, person_generation=person_generation, allow_paid=allow_paid, save_images_dir=save_images_dir, include_thoughts=include_thoughts, new_chat=new_chat, **kwargs)
         with self._lock:
             driver = self._require_driver()
-            wait_sec = self.timeout if timeout is None else max(15, int(timeout))
+            wait_sec = self.timeout if timeout is None else (None if int(timeout) <= 0 else max(15, int(timeout)))
             if effective_cfg.new_chat:
                 self.dom.click_new_chat(driver)
             self.dom.apply_config(driver, effective_cfg)

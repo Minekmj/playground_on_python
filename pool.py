@@ -23,7 +23,7 @@ class PlayGroundPool:
         encrypt: bool=True,
         key_path: Optional[Union[str, Path]]=None,
         wipe_runtime_profile: bool=False,
-        timeout: int=180,
+        timeout: Optional[int]=None,
         verbose: Union[bool, str]=True,
         log_cb: Optional[Callable[[str], None]]=None,
         default_config: Optional[PlayGroundConfig]=None,
