@@ -1,27 +1,32 @@
 from __future__ import annotations
+
 from datetime import datetime
 from typing import Callable, Optional, Union
 
+
+def _parse_verbose_level(verbose: Union[bool, str]) -> int:
+    if isinstance(verbose, str):
+        v = verbose.strip().lower()
+        if v in ('off', 'false', '0', 'none', 'quiet'):
+            return 0
+        if v in ('debug', 'all', 'trace'):
+            return 2
+        return 1
+    return 1 if verbose else 0
+
+
 class PlayGroundLogger:
+    """단계별 콘솔 로그 및 선택적 콜백 출력기."""
 
     def __init__(
         self,
-        client_id: str='default',
-        verbose: Union[bool, str]=True,
-        callback: Optional[Callable[[str], None]]=None,
+        client_id: str = 'default',
+        verbose: Union[bool, str] = True,
+        callback: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.client_id = client_id
         self.callback = callback
-        if isinstance(verbose, str):
-            v = verbose.strip().lower()
-            if v in ('off', 'false', '0', 'none', 'quiet'):
-                self.level = 0
-            elif v in ('debug', 'all', 'trace'):
-                self.level = 2
-            else:
-                self.level = 1
-        else:
-            self.level = 1 if verbose else 0
+        self.level = _parse_verbose_level(verbose)
 
     def _write(self, stage: str, message: str) -> None:
         now = datetime.now().strftime('%H:%M:%S')
